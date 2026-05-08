@@ -148,6 +148,22 @@ if (saved) {
   } catch (e) {}
 }
 
+// Auto-save state (per-browser, not synced)
+let autoSaveInterval = null;
+let autoSaveEnabled = localStorage.getItem('cjrc_autosave') === 'on';
+
+function startAutoSave() {
+  if (autoSaveInterval) return;
+  autoSaveInterval = setInterval(() => {
+    try { exportCSV({ silent: true }); }
+    catch (e) { console.error('Auto-save failed:', e); }
+  }, 10 * 60 * 1000); // 10 minutes
+}
+function stopAutoSave() {
+  if (autoSaveInterval) { clearInterval(autoSaveInterval); autoSaveInterval = null; }
+}
+if (autoSaveEnabled) startAutoSave();
+
 // === FIRESTORE SYNC ===
 function setStatus(state, text) {
   const dot = document.getElementById('status-dot');
@@ -340,12 +356,43 @@ function escapeHtml(s) {
 
 function renderQuestionList(questions, editable) {
   const c = document.getElementById('content');
+  const criteriaHidden = localStorage.getItem('cjrc_criteria_hidden') === 'yes';
+  const criteriaPanel = editable && !criteriaHidden ? `
+    <div style="background: var(--bg-primary); border: 0.5px solid var(--border-tertiary); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 12px;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;">
+        <div style="font-size: 13px; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">Criteria for a good research question</div>
+        <button id="hide-criteria" style="border: none; background: transparent; color: var(--text-secondary); font-size: 12px; padding: 2px 6px; cursor: pointer;">Hide</button>
+      </div>
+      <div style="font-size: 12px; color: var(--text-tertiary); margin-bottom: 8px; font-style: italic;">From Sutherland et al. (2011), as used in Alcock et al. (2016).</div>
+      <ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: var(--text-primary);">
+        <li>address an important gap in knowledge</li>
+        <li>be formulated specifically (not as a general topic area)</li>
+        <li>be clear, where appropriate, about specific interventions and outcome measures</li>
+        <li>be answerable specifically (not by 'it all depends')</li>
+        <li>have a factual answer that does not depend on value judgements</li>
+        <li>be answerable through a realistic research design</li>
+        <li>be of a scope that could reasonably be addressed by a research team</li>
+      </ul>
+    </div>
+  ` : '';
   c.innerHTML = `
-    <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem;">
-      ${editable ? `${questions.length} questions in your half (random mix from all 57). Click to expand and edit. Edits sync live to your paired group.` : `Read-only view of what your paired group is editing.`}
+    ${criteriaPanel}
+    <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: baseline; gap: 12px;">
+      <span>${editable ? `${questions.length} questions in your half (random mix from all 57). Click to expand and edit. Edits sync live to your paired group.` : `Read-only view of what your paired group is editing.`}</span>
+      ${editable && criteriaHidden ? `<button id="show-criteria" style="border: none; background: transparent; color: var(--text-info); font-size: 12px; padding: 2px 6px; cursor: pointer; flex-shrink: 0;">Show criteria</button>` : ''}
     </div>
     <div id="qlist"></div>
   `;
+  const hideBtn = document.getElementById('hide-criteria');
+  if (hideBtn) hideBtn.onclick = () => {
+    localStorage.setItem('cjrc_criteria_hidden', 'yes');
+    render();
+  };
+  const showBtn = document.getElementById('show-criteria');
+  if (showBtn) showBtn.onclick = () => {
+    localStorage.removeItem('cjrc_criteria_hidden');
+    render();
+  };
   const list = document.getElementById('qlist');
   questions.forEach(q => list.appendChild(questionCard(q, editable)));
 }
@@ -588,6 +635,19 @@ function renderStats() {
       <div style="font-size: 13px; color: var(--text-secondary);">Live overview of activity across all groups. Updates as people edit.</div>
     </div>
 
+    ${statBlock('Facilitator tools', `
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 4px 0;">
+        <div>
+          <div style="font-size: 13px; color: var(--text-primary); margin-bottom: 2px;">Auto-save backup CSV every 10 minutes</div>
+          <div style="font-size: 12px; color: var(--text-secondary);">Only this browser will download. Toggle on once at the start of the day.</div>
+        </div>
+        <label style="display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0;">
+          <input type="checkbox" id="autosave-toggle" ${autoSaveEnabled ? 'checked' : ''} style="margin-right: 6px;" />
+          <span style="font-size: 13px; color: var(--text-secondary);">${autoSaveEnabled ? 'On' : 'Off'}</span>
+        </label>
+      </div>
+    `)}
+
     ${statBlock('Edits', `
       ${statRow('Total questions edited', totalEdits)}
       ${statRow('Top 57 edited', `${top57Edited} of ${ALL_QUESTIONS.length}`)}
@@ -636,6 +696,21 @@ function renderStats() {
       }).join('')}
     `) : ''}
   `;
+
+  const toggle = document.getElementById('autosave-toggle');
+  if (toggle) {
+    toggle.onchange = (e) => {
+      autoSaveEnabled = e.target.checked;
+      localStorage.setItem('cjrc_autosave', autoSaveEnabled ? 'on' : 'off');
+      if (autoSaveEnabled) {
+        startAutoSave();
+        exportCSV({ silent: true }); // immediate first save
+      } else {
+        stopAutoSave();
+      }
+      render();
+    };
+  }
 }
 
 function statBlock(title, contentHtml) {
@@ -678,7 +753,8 @@ function renderExport() {
   document.getElementById('export-btn').onclick = exportCSV;
 }
 
-function exportCSV() {
+function exportCSV(opts) {
+  opts = opts || {};
   const allQs = ALL_QUESTIONS.concat(REJECTED);
   const revivedIds = new Set();
   const revivedBy = {};
@@ -718,7 +794,8 @@ function exportCSV() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `cjrc-agenda-${new Date().toISOString().slice(0,16).replace(':','-')}.csv`;
+  const prefix = opts.silent ? 'cjrc-autosave' : 'cjrc-agenda';
+  a.download = `${prefix}-${new Date().toISOString().slice(0,16).replace(':','-')}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
