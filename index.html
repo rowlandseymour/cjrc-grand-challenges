@@ -279,6 +279,21 @@ function renderLogin() {
   };
 }
 
+function questionsForHalf(half) {
+  // Returns the half's 29/28 questions plus any revived questions from the paired groups,
+  // appended to the end. Each revived question is annotated with `revived: true` so the
+  // card can show a "revived" tag instead of a rank.
+  const baseList = half === 'A' ? HALF_A : HALF_B;
+  const groupsForHalf = half === 'A' ? [1, 2] : [3, 4];
+  const revivedIds = new Set();
+  groupsForHalf.forEach(g => {
+    (STATE.revivals[g] || []).forEach(id => revivedIds.add(id));
+  });
+  const revivedQs = REJECTED.filter(q => revivedIds.has(q.id))
+    .map(q => Object.assign({}, q, { revived: true }));
+  return baseList.concat(revivedQs);
+}
+
 function renderMorning() {
   const u = STATE.user;
   const myHalf = (u.group === 1 || u.group === 2) ? 'A' : 'B';
@@ -297,10 +312,11 @@ function renderMorning() {
   `;
   hookHeader();
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { STATE.view = b.dataset.tab; render(); });
-  if (STATE.view === 'mine') renderQuestionList(myHalf === 'A' ? HALF_A : HALF_B, true);
-  else if (STATE.view === 'other') renderQuestionList(myHalf === 'A' ? HALF_A : HALF_B, false);
+  const myQs = questionsForHalf(myHalf);
+  if (STATE.view === 'mine') renderQuestionList(myQs, true);
+  else if (STATE.view === 'other') renderQuestionList(myQs, false);
   else if (STATE.view === 'revival') renderRevival();
-  else if (STATE.view === 'themes') renderThemes(myHalf === 'A' ? HALF_A : HALF_B);
+  else if (STATE.view === 'themes') renderThemes(myQs);
   else if (STATE.view === 'stats') renderStats();
   else if (STATE.view === 'export') renderExport();
 }
@@ -308,8 +324,13 @@ function renderMorning() {
 function renderAfternoon() {
   const u = STATE.user;
   const taggedIds = Object.entries(STATE.themes).filter(([id, t]) => t === u.theme).map(([id]) => parseInt(id));
+  const rejectedIds = new Set(REJECTED.map(q => q.id));
   const allLive = ALL_QUESTIONS.concat(REJECTED);
-  const myQuestions = taggedIds.map(id => allLive.find(q => q.id === id)).filter(Boolean)
+  const myQuestions = taggedIds.map(id => {
+    const q = allLive.find(qq => qq.id === id);
+    if (!q) return null;
+    return rejectedIds.has(q.id) ? Object.assign({}, q, { revived: true }) : q;
+  }).filter(Boolean)
     .sort((a, b) => a.rank - b.rank);
   app.innerHTML = `
     ${headerBar(u.theme, 'Afternoon cull session')}
@@ -354,6 +375,16 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function questionBadge(q, size) {
+  // "size" controls font and padding for the three call sites that use slightly different scales.
+  const fs = size === 'lg' ? 12 : 11;
+  const pad = size === 'lg' ? '2px 8px' : '2px 7px';
+  if (q.revived) {
+    return `<div style="background: var(--bg-secondary); color: var(--text-info); font-size: ${fs}px; padding: ${pad}; border-radius: var(--radius-md); font-weight: 500; flex-shrink: 0; margin-top: 2px;" title="Revived from the rejected pool">revived</div>`;
+  }
+  return `<div style="background: var(--bg-secondary); color: var(--text-secondary); font-size: ${fs}px; padding: ${pad}; border-radius: var(--radius-md); font-weight: 500; flex-shrink: 0; margin-top: 2px;">#${q.rank}</div>`;
+}
+
 function renderQuestionList(questions, editable) {
   const c = document.getElementById('content');
   const criteriaHidden = localStorage.getItem('cjrc_criteria_hidden') === 'yes';
@@ -378,7 +409,7 @@ function renderQuestionList(questions, editable) {
   c.innerHTML = `
     ${criteriaPanel}
     <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: baseline; gap: 12px;">
-      <span>${editable ? `${questions.length} questions in your half (random mix from all 57). Click to expand and edit. Edits sync live to your paired group.` : `Read-only view of what your paired group is editing.`}</span>
+      <span>${editable ? `${questions.length} questions in your half${questions.some(q => q.revived) ? ' (including revivals)' : ''}. Click to expand and edit. Edits sync live to your paired group.` : `Read-only view of what your paired group is editing.`}</span>
       ${editable && criteriaHidden ? `<button id="show-criteria" style="border: none; background: transparent; color: var(--text-info); font-size: 12px; padding: 2px 6px; cursor: pointer; flex-shrink: 0;">Show criteria</button>` : ''}
     </div>
     <div id="qlist"></div>
@@ -404,7 +435,7 @@ function questionCard(q, editable) {
   wrapper.style.cssText = 'background: var(--bg-primary); border: 0.5px solid var(--border-tertiary); border-radius: var(--radius-lg); padding: 12px 16px; margin-bottom: 8px;';
   wrapper.innerHTML = `
     <div style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer;" data-toggle>
-      <div style="background: var(--bg-secondary); color: var(--text-secondary); font-size: 12px; padding: 2px 8px; border-radius: var(--radius-md); font-weight: 500; flex-shrink: 0; margin-top: 2px;">#${q.rank}</div>
+      ${questionBadge(q, 'lg')}
       <div style="flex: 1; font-size: 14px; line-height: 1.55;">${escapeHtml(currentText)}</div>
       ${edit ? `<div style="font-size: 11px; color: var(--text-info); flex-shrink: 0; margin-top: 4px;">edited</div>` : ''}
     </div>
@@ -493,7 +524,7 @@ function renderThemes(questions) {
     const card = document.createElement('div');
     card.style.cssText = 'background: var(--bg-primary); border: 0.5px solid var(--border-tertiary); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 6px; display: flex; gap: 12px; align-items: flex-start;';
     card.innerHTML = `
-      <div style="background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; padding: 2px 7px; border-radius: var(--radius-md); flex-shrink: 0; margin-top: 4px;">#${q.rank}</div>
+      ${questionBadge(q, 'sm')}
       <div style="flex: 1; font-size: 13px; line-height: 1.5;">${escapeHtml(text)}</div>
       <select data-theme style="flex-shrink: 0; min-width: 220px; font-size: 12px;">
         <option value="">No theme yet...</option>
@@ -543,7 +574,7 @@ function renderCull(questions) {
     card.style.cssText = `background: var(--bg-primary); border: 0.5px solid ${cut ? 'var(--border-tertiary)' : 'var(--border-secondary)'}; border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 6px; opacity: ${cut ? '0.5' : '1'};`;
     card.innerHTML = `
       <div style="display: flex; gap: 12px; align-items: flex-start;">
-        <div style="background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; padding: 2px 7px; border-radius: var(--radius-md); flex-shrink: 0; margin-top: 2px;">#${q.rank}</div>
+        ${questionBadge(q, 'sm')}
         <div data-toggle style="flex: 1; font-size: 13px; line-height: 1.5; cursor: pointer; ${cut ? 'text-decoration: line-through;' : ''}">
           ${escapeHtml(text)}
           ${edit ? `<span style="font-size: 11px; color: var(--text-info); margin-left: 6px; text-decoration: none; display: inline-block;">edited</span>` : ''}
